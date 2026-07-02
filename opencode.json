@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    ".opencode/instructions/numpy-code-review.md"
+  ],
+  "mcp": {
+    "numpy-docs": {
+      "type": "local",
+      "command": [
+        "python",
+        "numpy_docs_server.py"
+      ],
+      "cwd": ".opencode/mcp",
+      "enabled": true,
+      "timeout": 15000
+    }
+  }
+}
