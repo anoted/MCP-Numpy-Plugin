@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""MCP server: web search scoped to the official NumPy documentation only.
+"""MCP server: NumPy documentation search and page fetch tools.
 
-Exposes a single tool, `search_numpy_docs`, which runs a web search that is
-*hard-restricted* to https://numpy.org/doc — no matter what the caller passes,
-the server appends `site:numpy.org/doc` and strips any `site:` the caller tried
-to inject, so results can only come from the NumPy docs.
+Exposes tools that are hard-restricted to https://numpy.org/doc. Search results
+and fetched pages are both limited to official NumPy documentation.
 
 Why hand-rolled? This is a teaching plugin (Module 5: Hooks & Plugins), so the
 server implements the MCP stdio protocol (newline-delimited JSON-RPC 2.0) using
@@ -28,8 +26,8 @@ SERVER_NAME = "numpy-docs"
 SERVER_VERSION = "1.0.0"
 DEFAULT_PROTOCOL = "2024-11-05"
 
-# Every query is forced into this documentation subtree. Change nothing else.
 DOC_SITE = "numpy.org/doc"
+DOC_BASE_URL = "https://numpy.org/doc/stable/"
 SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -50,6 +48,8 @@ _ANCHOR_RE = re.compile(r'<a\b([^>]*class="result__a"[^>]*)>(.*?)</a>', re.S)
 _SNIPPET_RE = re.compile(r'<a\b[^>]*class="result__snippet"[^>]*>(.*?)</a>', re.S)
 _HREF_RE = re.compile(r'href="([^"]+)"')
 _TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b.*?</\1>", re.S | re.I)
+_TITLE_RE = re.compile(r"<title\b[^>]*>(.*?)</title>", re.S | re.I)
 
 
 def _strip_tags(markup):
@@ -57,6 +57,16 @@ def _strip_tags(markup):
     # Decode HTML entities (&#x27; -> ', &amp; -> &, &mdash; -> em dash).
     text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_document_text(markup):
+    markup = _SCRIPT_STYLE_RE.sub(" ", markup)
+    title_match = _TITLE_RE.search(markup)
+    title = _strip_tags(title_match.group(1)) if title_match else "NumPy documentation"
+    text = _strip_tags(markup)
+    text = re.sub(r"\bSkip to (main )?content\b", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    return title, text
 
 
 def _decode_ddg_url(href):
@@ -69,6 +79,33 @@ def _decode_ddg_url(href):
     if href.startswith("//"):
         return "https:" + href
     return href
+
+
+def _normalize_doc_url(target):
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("Provide a NumPy documentation URL, path, or symbol.")
+
+    if re.fullmatch(r"(numpy|np)\.[A-Za-z_][\w.]*", target):
+        symbol = "numpy." + target.split(".", 1)[1] if target.startswith("np.") else target
+        return f"{DOC_BASE_URL}reference/generated/{symbol}.html"
+
+    if re.fullmatch(r"[A-Za-z_]\w*", target):
+        return f"{DOC_BASE_URL}reference/generated/numpy.{target}.html"
+
+    if target.startswith("http://") or target.startswith("https://"):
+        url = target
+    else:
+        path = target.lstrip("/")
+        if path.startswith("doc/"):
+            url = "https://numpy.org/" + path
+        else:
+            url = urllib.parse.urljoin(DOC_BASE_URL, path)
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "numpy.org" or not parsed.path.startswith("/doc/"):
+        raise ValueError("Only https://numpy.org/doc pages can be fetched.")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", parsed.query, ""))
 
 
 def search_numpy_docs(query, max_results=5):
@@ -136,6 +173,39 @@ def search_numpy_docs(query, max_results=5):
     return "\n".join(lines).rstrip()
 
 
+def fetch_numpy_doc(target, max_chars=12000):
+    """Fetch and return text from one official NumPy documentation page."""
+    try:
+        max_chars = max(1000, min(int(max_chars), 20000))
+    except (TypeError, ValueError):
+        max_chars = 12000
+
+    try:
+        url = _normalize_doc_url(target)
+    except ValueError as exc:
+        return str(exc)
+
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": "text/html"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            markup = resp.read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        return f"Could not fetch {url} ({exc.__class__.__name__}: {exc})."
+
+    title, text = _clean_document_text(markup)
+    if not text:
+        return f"Fetched {url}, but could not extract readable text."
+
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "\n\n[truncated]"
+
+    return f"{title}\n{url}\n\n{text}"
+
+
 TOOLS = [
     {
         "name": "search_numpy_docs",
@@ -160,7 +230,31 @@ TOOLS = [
             },
             "required": ["query"],
         },
-    }
+    },
+    {
+        "name": "fetch_numpy_doc",
+        "description": (
+            "Fetch readable text from a specific official NumPy documentation "
+            "page. Accepts a full https://numpy.org/doc URL, a docs path such "
+            "as 'reference/generated/numpy.reshape.html', or a symbol such as "
+            "'reshape' / 'numpy.reshape'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "NumPy docs URL, docs path, or NumPy symbol to fetch.",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Maximum characters of extracted page text to return (1000-20000, default 12000).",
+                    "default": 12000,
+                },
+            },
+            "required": ["target"],
+        },
+    },
 ]
 
 
@@ -204,14 +298,20 @@ def handle(request):
     elif method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") or {}
-        if name != "search_numpy_docs":
-            error(req_id, -32602, f"Unknown tool: {name}")
-            return
         try:
-            text = search_numpy_docs(
-                arguments.get("query", ""),
-                arguments.get("max_results", 5),
-            )
+            if name == "search_numpy_docs":
+                text = search_numpy_docs(
+                    arguments.get("query", ""),
+                    arguments.get("max_results", 5),
+                )
+            elif name == "fetch_numpy_doc":
+                text = fetch_numpy_doc(
+                    arguments.get("target", ""),
+                    arguments.get("max_chars", 12000),
+                )
+            else:
+                error(req_id, -32602, f"Unknown tool: {name}")
+                return
             result(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
         except Exception as exc:  # never let a tool crash the server
             log("tool error:", exc)

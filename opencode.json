@@ -8,9 +8,8 @@
       "type": "local",
       "command": [
         "python",
-        "numpy_docs_server.py"
+        ".opencode/mcp/numpy_docs_server.py"
       ],
-      "cwd": ".opencode/mcp",
       "enabled": true,
       "timeout": 15000
     }

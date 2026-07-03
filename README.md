@@ -8,10 +8,10 @@ programming, while explaining the reason behind each fix.
 
 | Component | OpenCode location | What it does |
 | --- | --- | --- |
-| Plugin | `.opencode/plugins/numpy-code-review.js` | Runs after write/edit-style tool calls and scans edited `.py` files for common NumPy anti-patterns. |
+| Plugin | `.opencode/plugins/numpy-code-review.js` | Scans changed `.py` files, shows hook output in the TUI, and writes `.opencode/numpy-review-hook-report.md`. |
 | Skill | `.opencode/skills/numpy-review/SKILL.md` | Gives the agent a structured review method: correctness, performance, style, and next steps. |
-| Command | `.opencode/commands/numpy-review.md` | Adds `/numpy-review [file-or-directory]` for manual NumPy-focused reviews. |
-| MCP server | `.opencode/mcp/numpy_docs_server.py` | Adds `numpy-docs`, a `search_numpy_docs` tool restricted to `numpy.org/doc`. |
+| Command | `.opencode/commands/numpy-review.md` | Adds `/numpy-review [file-or-directory]` as the explicit review workflow using the skill and docs MCP. |
+| MCP server | `.opencode/mcp/numpy_docs_server.py` | Adds `numpy-docs` tools to search NumPy docs and fetch page text from `numpy.org/doc`. |
 | Instructions | `.opencode/instructions/numpy-code-review.md` | Sets the teaching tone for Python/NumPy work. |
 
 ## Repository layout
@@ -42,8 +42,8 @@ numpy-review-plugin-opencode/
 
 - OpenCode installed and configured.
 - Python 3.8+ on your `PATH` as `python`.
-- No `pip install` is required. The scanner and MCP server use only the Python
-  standard library.
+- No `pip install` is required. The scanner, plugin, and MCP server use OpenCode
+  defaults plus the Python/Node standard libraries.
 
 Check Python with:
 
@@ -96,8 +96,7 @@ for example:
   "mcp": {
     "numpy-docs": {
       "type": "local",
-      "command": ["python", "numpy_docs_server.py"],
-      "cwd": "C:/Users/YOU/.config/opencode/mcp",
+      "command": ["python", "C:/Users/YOU/.config/opencode/mcp/numpy_docs_server.py"],
       "enabled": true,
       "timeout": 15000
     }
@@ -120,8 +119,41 @@ In OpenCode:
 
 - Ask OpenCode to search the NumPy docs for broadcasting and confirm it can use
   the `numpy-docs` MCP tool.
-- Edit `examples/student_solution.py`; the plugin scans edited Python files and
-  appends NumPy teaching points to compatible edit tool output.
+- Ask OpenCode to fetch the NumPy docs page for `reshape` and confirm it can use
+  `fetch_numpy_doc`.
+- Edit `examples/student_solution.py` from an editor. The file-change hook scans
+  the changed Python file, shows a TUI toast, inserts a short hook summary into
+  the prompt, and updates `.opencode/numpy-review-hook-report.md`.
+
+## Hook behavior
+
+The plugin keeps hooks narrow while still making hook activity visible:
+
+- On `file.edited` and `file.watcher.updated`, it scans changed `.py` files with
+  `.opencode/scripts/numpy_review.py`.
+- On write/edit-style tool calls, it scans the edited Python file and appends a
+  short `[NumPy review hook]` note to the tool output.
+- It writes the latest scanner output to `.opencode/numpy-review-hook-report.md`
+  so the hook has a concrete, inspectable output artifact. This report is not
+  ignored by the plugin template because it demonstrates hook output.
+- It shows a `NumPy review hook` TUI toast after file-change scans, including
+  the changed file and number of findings written to the report.
+- It also inserts a short `[NumPy review hook]` summary into the TUI prompt
+  after file-change scans. The hook does not auto-submit anything.
+- It does not register read hooks, does not show startup messages, and does not
+  use experimental chat hooks.
+- `/numpy-review` is the intentional visible review path. It reads the target
+  file, reads the hook report when present, applies the `numpy-review` skill,
+  and uses the `numpy-docs` MCP tools when documentation is useful.
+
+The hook export is intentionally compatible with OpenCode 1.17.x:
+
+```js
+export const server = async ({ directory }) => ({
+  event: async ({ event }) => { /* scan changed .py files and update report */ },
+  "tool.execute.after": async (input, output) => { /* annotate edit output */ }
+})
+```
 
 ## Manual smoke tests
 
@@ -136,7 +168,8 @@ Run the MCP server directly:
 ```powershell
 $messages = @(
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}',
-  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetch_numpy_doc","arguments":{"target":"reshape","max_chars":2000}}}'
 )
 $messages | python .opencode\mcp\numpy_docs_server.py
 ```

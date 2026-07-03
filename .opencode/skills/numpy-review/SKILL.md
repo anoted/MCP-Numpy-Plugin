@@ -12,9 +12,14 @@ idiomatic fix. Prefer a short before/after snippet over prose.
 ## How to run a review
 
 1. Read the file(s) under review in full before commenting.
-2. Walk the checklist below top to bottom.
-3. Group findings by severity: **Correctness → Performance → Style/Idiom → Praise.**
-4. End with 1–2 concrete next steps the student can practice.
+2. If `.opencode/numpy-review-hook-report.md` exists, read it and verify any
+   relevant hook findings against the target file before mentioning them.
+3. Use the `numpy-docs` MCP tools when documentation would improve accuracy:
+   search with `search_numpy_docs`, then fetch the relevant page with
+   `fetch_numpy_doc`.
+4. Walk the checklist below top to bottom.
+5. Group findings by severity: **Correctness → Performance → Style/Idiom → Praise.**
+6. End with 1–2 concrete next steps the student can practice.
 
 Keep the tone encouraging. Point out at least one thing they did well.
 
